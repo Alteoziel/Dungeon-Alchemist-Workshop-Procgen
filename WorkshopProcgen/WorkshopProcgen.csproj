@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>WorkshopProcgen</AssemblyName>
+    <RootNamespace>WorkshopProcgen</RootNamespace>
+    <Version>0.1.0</Version>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <MSBuildWarningsAsMessages>MSB3277</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Dungeon Alchemist</GameDir>
+    <ManagedDir>$(GameDir)\Dungeon Alchemist_Data\Managed</ManagedDir>
+    <BepInExDir>$(GameDir)\BepInEx</BepInExDir>
+    <PluginOutDir>$(BepInExDir)\plugins\WorkshopProcgen</PluginOutDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx" HintPath="$(BepInExDir)\core\BepInEx.dll" Private="false" />
+    <Reference Include="0Harmony" HintPath="$(BepInExDir)\core\0Harmony.dll" Private="false" />
+    <Reference Include="Assembly-CSharp" HintPath="$(ManagedDir)\Assembly-CSharp.dll" Private="false" />
+    <Reference Include="Assembly-CSharp-firstpass" HintPath="$(ManagedDir)\Assembly-CSharp-firstpass.dll" Private="false" Condition="Exists('$(ManagedDir)\Assembly-CSharp-firstpass.dll')" />
+    <Reference Include="SharedAssembly" HintPath="$(ManagedDir)\SharedAssembly.dll" Private="false" />
+    <Reference Include="UniTask" HintPath="$(ManagedDir)\UniTask.dll" Private="false" Condition="Exists('$(ManagedDir)\UniTask.dll')" />
+    <Reference Include="Unity.Collections" HintPath="$(ManagedDir)\Unity.Collections.dll" Private="false" />
+    <Reference Include="Unity.Mathematics" HintPath="$(ManagedDir)\Unity.Mathematics.dll" Private="false" />
+    <Reference Include="Unity.Burst" HintPath="$(ManagedDir)\Unity.Burst.dll" Private="false" />
+    <Reference Include="Newtonsoft.Json" HintPath="$(ManagedDir)\Newtonsoft.Json.dll" Private="false" Condition="Exists('$(ManagedDir)\Newtonsoft.Json.dll')" />
+    <Reference Include="UnityEngine.UI" HintPath="$(ManagedDir)\UnityEngine.UI.dll" Private="false" />
+    <Reference Include="$(ManagedDir)\UnityEngine.dll" Private="false" />
+    <Reference Include="$(ManagedDir)\UnityEngine.*Module.dll" Private="false" />
+  </ItemGroup>
+
+  <Target Name="CopyToBepInExPlugins" AfterTargets="Build">
+    <MakeDir Directories="$(PluginOutDir)" />
+    <Copy SourceFiles="$(TargetPath);$(TargetDir)$(TargetName).pdb" DestinationFolder="$(PluginOutDir)" SkipUnchangedFiles="true" ContinueOnError="true" />
+  </Target>
+
+</Project>
