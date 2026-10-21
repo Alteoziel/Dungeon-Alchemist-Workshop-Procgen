@@ -28,3 +28,6 @@ To paint with more than one object, open the object picker, hold **Ctrl**, and c
 ## Remove
 
 Close the game. Delete the folder `BepInEx\plugins\WorkshopProcgen` inside the Dungeon Alchemist folder. The game then runs without this mod.
+
+
+Disclaimer: this mod was made utilizing AI.
