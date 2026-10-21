@@ -2,6 +2,8 @@
 
 Workshop Procgen is a plugin for the Windows Steam version of Dungeon Alchemist. Subscribed Steam Workshop assets can stand in for the props, floors, walls, doors, and windows that room generation places. You choose which assets are used and how often. You can also pick several objects at once and paint with them.
 
+This release works with **Dungeon Alchemist 1.8.10** on Windows through Steam. That is the patch notes version the game reports. It was made for that build, which runs on Unity 2022.3.62f2.
+
 Roofs stay on the game's own roof pieces.
 
 ## Install
