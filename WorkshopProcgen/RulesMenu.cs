@@ -120,6 +120,10 @@ namespace WorkshopProcgen
             GUILayout.BeginHorizontal();
             GUILayout.Label("Search", GUILayout.Width(52f));
             _search = GUILayout.TextField(_search ?? "");
+            if (GUILayout.Button("Manual", GUILayout.Width(70f)))
+                ManualView.Show();
+            if (GUILayout.Button("Feedback", GUILayout.Width(80f)))
+                FeedbackForm.Show();
             if (GUILayout.Button("Close", GUILayout.Width(70f)))
                 _open = false;
             GUILayout.EndHorizontal();

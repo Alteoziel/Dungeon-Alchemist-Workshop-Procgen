@@ -263,6 +263,8 @@ namespace WorkshopProcgen
             UnityEngine.Object.DontDestroyOnLoad(go);
             go.AddComponent<IndexUpdater>();
             go.AddComponent<RulesMenu>();
+            go.AddComponent<FeedbackForm>();
+            go.AddComponent<ManualView>();
         }
 
         public static void RegisterDatabase(DatabaseConnection db)

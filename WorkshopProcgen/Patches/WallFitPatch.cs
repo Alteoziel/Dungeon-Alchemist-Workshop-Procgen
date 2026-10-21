@@ -115,7 +115,11 @@ namespace WorkshopProcgen.Patches
             catch (Exception e)
             {
                 if (Logged.Add(config.Id ?? ""))
-                    Plugin.Log.LogWarning($"[wall] Floor '{config.name}' could not be shown ({e.GetType().Name}: {e.Message}). The room is left intact.");
+                {
+                    string note = $"Floor '{config.name}' could not be shown ({e.GetType().Name}: {e.Message}).";
+                    Plugin.Log.LogWarning("[wall] " + note + " The room is left intact.");
+                    FeedbackForm.Offer(note);
+                }
             }
         }
     }
@@ -153,7 +157,11 @@ namespace WorkshopProcgen.Patches
             catch (Exception e)
             {
                 if (Logged.Add(config.Id ?? ""))
-                    Plugin.Log.LogWarning($"[wall] '{config.name}' could not be shown as a door or window ({e.GetType().Name}: {e.Message}). The room is left intact.");
+                {
+                    string note = $"'{config.name}' could not be shown as a door or window ({e.GetType().Name}: {e.Message}).";
+                    Plugin.Log.LogWarning("[wall] " + note + " The room is left intact.");
+                    FeedbackForm.Offer(note);
+                }
             }
         }
     }

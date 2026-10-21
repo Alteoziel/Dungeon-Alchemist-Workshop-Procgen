@@ -38,7 +38,7 @@
 
   <Target Name="CopyToBepInExPlugins" AfterTargets="Build">
     <MakeDir Directories="$(PluginOutDir)" />
-    <Copy SourceFiles="$(TargetPath);$(TargetDir)$(TargetName).pdb" DestinationFolder="$(PluginOutDir)" SkipUnchangedFiles="true" ContinueOnError="true" />
+    <Copy SourceFiles="$(TargetPath);$(TargetDir)$(TargetName).pdb;$(MSBuildThisFileDirectory)..\docs\manual.md" DestinationFolder="$(PluginOutDir)" SkipUnchangedFiles="true" ContinueOnError="true" />
   </Target>
 
 </Project>
