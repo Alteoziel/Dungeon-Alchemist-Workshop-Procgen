@@ -32,6 +32,10 @@ namespace WorkshopProcgen
         [JsonProperty("forcedMappingChance")]
         public float? ForcedMappingChance { get; set; }
 
+        /// <summary>Folder names created in the F6 menu. Assets with no folder stay unassigned.</summary>
+        [JsonProperty("folders")]
+        public List<string> Folders = new List<string>();
+
         /// <summary>
         /// Per Workshop asset, keyed by block id (also accepts published file id or exact config name).
         /// Missing entries are automatic: enabled, global chance, categories from <see cref="CategoryRoles"/>.
@@ -96,6 +100,7 @@ namespace WorkshopProcgen
                 cfg.Assets = cfg.Assets == null
                     ? new Dictionary<string, AssetRule>(StringComparer.OrdinalIgnoreCase)
                     : new Dictionary<string, AssetRule>(cfg.Assets, StringComparer.OrdinalIgnoreCase);
+                cfg.Folders ??= new List<string>();
                 return cfg;
             }
             catch (Exception e)
@@ -153,10 +158,14 @@ namespace WorkshopProcgen
   // Chance used for forced mappings. null = same rules as categoryChance / ReplacementChance.
   ""forcedMappingChance"": null,
 
+  // Folder names from the F6 menu. New assets stay unassigned until moved into one.
+  ""folders"": [],
+
   // Per Workshop asset. Omit an asset and it is included automatically.
   // enabled: false keeps it out of generation. chance: 0..1, omit to use the global rate.
   // categories: native display-category names this asset may replace. Omit to use automatic matching
   // (its own categories, plus close roles such as Desks standing in for Tables).
+  // folder: omit to leave the asset in Unassigned.
   ""assets"": {
     // ""Scifi Desk"": { ""enabled"": true, ""chance"": 0.8, ""categories"": [ ""Tables"", ""Desks"" ] }
   }
@@ -175,5 +184,16 @@ namespace WorkshopProcgen
         /// <summary>Null means automatic categories. An empty list replaces nothing.</summary>
         [JsonProperty("categories", NullValueHandling = NullValueHandling.Ignore)]
         public List<string> Categories { get; set; }
+
+        /// <summary>
+        /// Null or "auto" keeps automatic matching. "object" stays an object.
+        /// "wall", "partial wall", "floor", "door", or "window" builds a block of that kind.
+        /// </summary>
+        [JsonProperty("buildAs", NullValueHandling = NullValueHandling.Ignore)]
+        public string BuildAs { get; set; }
+
+        /// <summary>Null leaves the asset in the unassigned list.</summary>
+        [JsonProperty("folder", NullValueHandling = NullValueHandling.Ignore)]
+        public string Folder { get; set; }
     }
 }

@@ -11,7 +11,7 @@ namespace WorkshopProcgen
     {
         public const string PluginGuid = "com.aedin.workshopprocgen";
         public const string PluginName = "Workshop Procgen";
-        public const string PluginVersion = "0.2.0";
+        public const string PluginVersion = "0.5.3";
 
         internal static ManualLogSource Log { get; private set; }
 

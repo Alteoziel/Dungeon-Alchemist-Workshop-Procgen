@@ -38,7 +38,7 @@ namespace WorkshopProcgen
         };
 
         public static string[] Suggest(string assetName, IList<string> keywords, IList<string> ownCategoryNames,
-            Dictionary<string, string> knownNames)
+            Dictionary<string, string> knownNames, StructuralRole role = StructuralRole.None)
         {
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (ownCategoryNames != null)
@@ -84,9 +84,35 @@ namespace WorkshopProcgen
                 }
             }
 
+            AddRoleHints(set, assetName, keywords, role, knownNames);
+
             var list = new List<string>(set);
             list.Sort(StringComparer.OrdinalIgnoreCase);
             return list.ToArray();
+        }
+
+        // Only categories already known for this block type are added, so an object named "wall" cannot
+        // pick up wall categories and a door cannot pick up window categories.
+        private static void AddRoleHints(HashSet<string> set, string assetName, IList<string> keywords,
+            StructuralRole role, Dictionary<string, string> knownNames)
+        {
+            string token;
+            switch (role)
+            {
+                case StructuralRole.Floor: token = "floor"; break;
+                case StructuralRole.Wall:
+                case StructuralRole.PartialWall: token = "wall"; break;
+                case StructuralRole.Door: token = "door"; break;
+                case StructuralRole.Window: token = "window"; break;
+                default: return;
+            }
+            if (!HasWord(assetName, keywords, token))
+                return;
+            foreach (var name in knownNames.Values)
+            {
+                if (name.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0)
+                    set.Add(name);
+            }
         }
 
         private static bool HasWord(string assetName, IList<string> keywords, string word)

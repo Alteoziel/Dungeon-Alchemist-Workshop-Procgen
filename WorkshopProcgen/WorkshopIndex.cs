@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using BepInEx;
 using DungeonAlchemist;
 using DungeonAlchemist.Config;
 using DungeonAlchemist.Database;
@@ -22,6 +24,8 @@ namespace WorkshopProcgen
         public string[] Categories;
         public Vector2 Footprint;
         public float? Chance;
+        public StructuralRole Role;
+        public bool CategoryRestricted;
 
         public override string ToString() => $"'{Name}' ({Id})";
     }
@@ -38,6 +42,10 @@ namespace WorkshopProcgen
         public bool Enabled;
         public float? Chance;
         public bool UsingCustomCategories;
+        public StructuralRole Role;
+        public string BuildAs;
+        public long AddedUtcTicks;
+        public string Folder;
     }
 
     /// <summary>Immutable once published; the only index data the generation thread may read.</summary>
@@ -57,9 +65,15 @@ namespace WorkshopProcgen
         public HashSet<string> TableCategoryIds;
         public List<CatalogAsset> Catalog;
         public string[] ObjectCategoryNames;
+        public string[] FloorCategoryNames;
+        public string[] WallCategoryNames;
+        public string[] OpeningCategoryNames;
+        public Dictionary<StructuralRole, WorkshopEntry[]> ByRole;
 
         private readonly ConcurrentDictionary<(string, float), WorkshopEntry[]> _matchCache =
             new ConcurrentDictionary<(string, float), WorkshopEntry[]>();
+        private readonly ConcurrentDictionary<string, WorkshopEntry[]> _structuralCache =
+            new ConcurrentDictionary<string, WorkshopEntry[]>();
 
         public bool IsForced(string nativeId) => Forced.ContainsKey(nativeId);
 
@@ -87,6 +101,104 @@ namespace WorkshopProcgen
             return best ?? defaultChance;
         }
 
+        public string[] CategoryNamesFor(StructuralRole role)
+        {
+            switch (role)
+            {
+                case StructuralRole.Floor: return FloorCategoryNames ?? Array.Empty<string>();
+                case StructuralRole.Wall:
+                case StructuralRole.PartialWall: return WallCategoryNames ?? Array.Empty<string>();
+                case StructuralRole.Door:
+                case StructuralRole.Window: return OpeningCategoryNames ?? Array.Empty<string>();
+                default: return ObjectCategoryNames ?? Array.Empty<string>();
+            }
+        }
+
+        /// <summary>
+        /// Picks a subscribed floor, wall, door, or window for this native block.
+        /// Automatic assets replace every block of the same kind. A custom category list restricts that.
+        /// </summary>
+        public bool TryPickStructural(BuildingBlockConfig native, Vector2 position, float rotation, float defaultChance,
+            out BuildingBlockConfig replacement)
+        {
+            replacement = null;
+            if (!Plugin.Enabled.Value || native == null || !AutoMatch || ImportedBlockIds.Contains(native.Id))
+                return false;
+            var role = WorkshopIndex.RoleOf(native);
+            if (role == StructuralRole.None || ByRole == null || !ByRole.TryGetValue(role, out var pool) || pool.Length == 0)
+                return false;
+
+            var candidates = _structuralCache.GetOrAdd(native.Id, _ => FilterStructural(native, pool));
+            if (candidates.Length == 0)
+                return false;
+
+            float chance = 0f;
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                float rate = candidates[i].Chance ?? GetChance(native, defaultChance);
+                if (rate > chance)
+                    chance = rate;
+            }
+            var rng = ReplacementRng.ForObject(native.Id, position, rotation);
+            if (rng.NextDouble() >= chance)
+                return false;
+            var pick = PickWeighted(candidates, rng, native, defaultChance);
+            replacement = Db.BuildingBlockConfigs.GetOrNull(pick.Id);
+            return replacement != null;
+        }
+
+        private WorkshopEntry[] FilterStructural(BuildingBlockConfig native, WorkshopEntry[] pool)
+        {
+            var nativeCats = new HashSet<string>(WorkshopIndex.SafeNormalCategories(native, Db));
+            var result = new List<WorkshopEntry>();
+            for (int i = 0; i < pool.Length; i++)
+            {
+                var entry = pool[i];
+                if (!entry.CategoryRestricted)
+                {
+                    result.Add(entry);
+                    continue;
+                }
+                if (entry.Categories == null || entry.Categories.Length == 0)
+                    continue;
+                if (nativeCats.Count == 0)
+                {
+                    result.Add(entry);
+                    continue;
+                }
+                for (int c = 0; c < entry.Categories.Length; c++)
+                {
+                    if (nativeCats.Contains(entry.Categories[c]))
+                    {
+                        result.Add(entry);
+                        break;
+                    }
+                }
+            }
+            return result.ToArray();
+        }
+
+        private WorkshopEntry PickWeighted(WorkshopEntry[] candidates, System.Random rng, BuildingBlockConfig native, float defaultChance)
+        {
+            double total = 0;
+            var weights = new double[candidates.Length];
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                weights[i] = Mathf.Clamp01(candidates[i].Chance ?? GetChance(native, defaultChance));
+                total += weights[i];
+            }
+            if (total <= 0)
+                return candidates[candidates.Length - 1];
+            double cursor = rng.NextDouble() * total;
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                cursor -= weights[i];
+                if (cursor <= 0)
+                    return candidates[i];
+            }
+            return candidates[candidates.Length - 1];
+        }
+
         public bool IsTable(BuildingBlockConfig native)
         {
             if (native.name != null && native.name.IndexOf("table", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -109,7 +221,7 @@ namespace WorkshopProcgen
                     continue;
                 foreach (var e in list)
                 {
-                    if (!WallCompatible(e.WallMount, native.wallMountType) || result.Contains(e))
+                    if (e.Role != StructuralRole.None || !WallCompatible(e.WallMount, native.wallMountType) || result.Contains(e))
                         continue;
                     if (Fits(e.Footprint, nativeFp, tolerance))
                         result.Add(e);
@@ -293,6 +405,8 @@ namespace WorkshopProcgen
                     _overrides = OverrideConfig.LoadOrCreate();
                     _overrideStamp = OverrideConfig.GetLastWriteTimeUtc();
                     _current = Build(_db, _overrides ?? new OverrideConfig());
+                    if (WallPropConverter.WantsRetry)
+                        MarkDirty(null);
                 }
                 catch (Exception e)
                 {
@@ -312,8 +426,8 @@ namespace WorkshopProcgen
 
             var displayCategories = db.DisplayCategories.List() ?? new List<DisplayCategoryConfig>();
             var categoryIdByName = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-            var knownCategoryNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            var objectCategoryNames = new List<string>();
+            var knownByType = new Dictionary<BuildingBlockType, Dictionary<string, string>>();
+            var namesByType = new Dictionary<BuildingBlockType, List<string>>();
             foreach (var dc in displayCategories)
             {
                 if (dc?.name == null)
@@ -321,20 +435,36 @@ namespace WorkshopProcgen
                 if (!categoryIdByName.TryGetValue(dc.name, out var ids))
                     categoryIdByName[dc.name] = ids = new List<string>();
                 ids.Add(dc.Id);
-                if (dc.specialCategory != SpecialDisplayCategory.Normal || !dc.visible || dc.type != BuildingBlockType.Object)
+                if (dc.specialCategory != SpecialDisplayCategory.Normal || !dc.visible)
                     continue;
-                if (knownCategoryNames.ContainsKey(dc.name))
+                if (dc.type != BuildingBlockType.Object && dc.type != BuildingBlockType.Floor
+                    && dc.type != BuildingBlockType.Wall && dc.type != BuildingBlockType.WallOpening)
                     continue;
-                knownCategoryNames[dc.name] = dc.name;
-                objectCategoryNames.Add(dc.name);
+                if (!knownByType.TryGetValue(dc.type, out var known))
+                {
+                    known = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    knownByType[dc.type] = known;
+                    namesByType[dc.type] = new List<string>();
+                }
+                if (known.ContainsKey(dc.name))
+                    continue;
+                known[dc.name] = dc.name;
+                namesByType[dc.type].Add(dc.name);
             }
-            objectCategoryNames.Sort(StringComparer.OrdinalIgnoreCase);
+            foreach (var names in namesByType.Values)
+                names.Sort(StringComparer.OrdinalIgnoreCase);
+            var emptyKnown = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             var entries = new List<WorkshopEntry>();
+            var structural = new List<WorkshopEntry>();
             var catalog = new List<CatalogAsset>();
             string scifiDeskId = null;
             int skippedHidden = 0, skippedType = 0, skippedBlacklist = 0, skippedLocal = 0, skippedBounds = 0, skippedDisabled = 0;
+            int convertedWalls = 0;
 
+            WallPropConverter.Begin();
+            try
+            {
             foreach (var kv in perModel)
             {
                 if (kv.Value == null)
@@ -351,8 +481,14 @@ namespace WorkshopProcgen
                     if (cfg.modelId == ScifiDeskModelId && scifiDeskId == null && cfg.type == BuildingBlockType.Object)
                         scifiDeskId = cfg.Id;
 
-                    if (cfg.deprecated || cfg.type != BuildingBlockType.Object || cfg.automaticType != AutomaticBuildingBlockType.None
-                        || cfg.IsToken() || cfg.IsDecal() || cfg.IsOverlay())
+                    var role = RoleOf(cfg);
+                    bool usableObject = role == StructuralRole.None && cfg.type == BuildingBlockType.Object
+                        && !cfg.deprecated && cfg.automaticType == AutomaticBuildingBlockType.None
+                        && !cfg.IsToken() && !cfg.IsDecal() && !cfg.IsOverlay();
+                    bool usableStructural = role != StructuralRole.None && !cfg.deprecated
+                        && cfg.automaticType == AutomaticBuildingBlockType.None
+                        && !cfg.IsToken() && !cfg.IsDecal() && !cfg.IsOverlay();
+                    if (!usableObject && !usableStructural)
                     {
                         skippedType++;
                         continue;
@@ -373,22 +509,105 @@ namespace WorkshopProcgen
                         skippedBlacklist++;
                         continue;
                     }
-                    if (!TryGetFootprint(cfg, db, out var fp))
+                    bool hasFootprint = TryGetFootprint(cfg, db, out var fp);
+                    var rule = ov.FindAsset(blockId, cfg.name, publishedId);
+                    bool explicitBuild = TryParseBuildAs(rule?.BuildAs, out bool asObject, out var forcedRole);
+                    WallPropConversion conversion = null;
+                    if (usableObject && !asObject)
+                    {
+                        conversion = WallPropConverter.TryConvert(db, cfg, explicitBuild ? forcedRole : StructuralRole.None);
+                        if (conversion.Status == WallPropStatus.Rejected)
+                            Plugin.Log.LogInfo($"[wall] '{cfg.name}' stays an object ({conversion.Reason}).");
+                        else if (conversion.Status == WallPropStatus.Converted)
+                            convertedWalls++;
+                    }
+                    bool converted = conversion?.Status == WallPropStatus.Converted && conversion.Config != null;
+                    if (usableObject && !hasFootprint && !converted)
                     {
                         skippedBounds++;
                         continue;
                     }
+                    if (!hasFootprint)
+                        fp = Vector2.zero;
 
+                    var displayRole = converted ? RoleOf(conversion.Config) : role;
+                    var nameType = displayRole == StructuralRole.None ? BuildingBlockType.Object : cfg.type;
+                    if (displayRole == StructuralRole.Floor)
+                        nameType = BuildingBlockType.Floor;
+                    else if (displayRole == StructuralRole.Wall || displayRole == StructuralRole.PartialWall)
+                        nameType = BuildingBlockType.Wall;
+                    else if (displayRole == StructuralRole.Door || displayRole == StructuralRole.Window)
+                        nameType = BuildingBlockType.WallOpening;
+                    if (!knownByType.TryGetValue(nameType, out var knownNames))
+                        knownNames = emptyKnown;
                     var authored = cfg.IsInLightCategory(db)
                         ? Array.Empty<string>()
                         : NamesOf(SafeNormalCategories(cfg, db), db);
-                    var autoNames = CategoryRoles.Suggest(cfg.name, cfg.keywords, authored, knownCategoryNames);
-                    var rule = ov.FindAsset(blockId, cfg.name, publishedId);
-                    bool custom = rule?.Categories != null;
-                    var activeNames = custom ? ResolveRuleCategories(rule.Categories, db, knownCategoryNames) : autoNames;
+                    var suggestRole = converted ? displayRole : role;
+                    var autoNames = CategoryRoles.Suggest(cfg.name, cfg.keywords, converted ? Array.Empty<string>() : authored, knownNames, suggestRole);
+                    bool custom = !converted && rule?.Categories != null
+                        || (explicitBuild && converted && rule?.Categories != null);
+                    var activeNames = custom ? ResolveRuleCategories(rule.Categories, db, knownNames) : autoNames;
                     bool enabled = rule?.Enabled ?? true;
                     float? chance = rule?.Chance is float c ? Mathf.Clamp01(c) : (float?)null;
+                    var displayFootprint = converted ? conversion.Footprint : fp;
 
+                    catalog.Add(new CatalogAsset
+                    {
+                        Id = blockId,
+                        Name = cfg.name,
+                        PublishedId = publishedId,
+                        Local = local,
+                        Footprint = displayFootprint,
+                        AutoCategories = autoNames,
+                        Categories = activeNames,
+                        Enabled = enabled,
+                        Chance = chance,
+                        UsingCustomCategories = custom,
+                        Role = displayRole,
+                        BuildAs = explicitBuild ? rule.BuildAs : null,
+                        AddedUtcTicks = WorkshopAddedUtcTicks(publishedId),
+                        Folder = string.IsNullOrWhiteSpace(rule?.Folder) ? null : rule.Folder.Trim(),
+                    });
+                    if (!enabled)
+                    {
+                        skippedDisabled++;
+                        continue;
+                    }
+                    if (converted)
+                    {
+                        importedIds.Add(conversion.Config.Id);
+                        structural.Add(new WorkshopEntry
+                        {
+                            Id = conversion.Config.Id,
+                            Name = cfg.name,
+                            ModelId = conversion.Config.modelId,
+                            ImportedModelId = kv.Key,
+                            PublishedId = publishedId,
+                            Local = local,
+                            WallMount = WallMountType.No,
+                            Categories = IdsForNames(activeNames, categoryIdByName),
+                            Footprint = conversion.Footprint,
+                            Chance = chance,
+                            Role = displayRole,
+                            CategoryRestricted = explicitBuild && rule?.Categories != null,
+                        });
+                    }
+                    if (explicitBuild && converted)
+                        continue;
+                    string[] objectNamesForEntry = activeNames;
+                    bool objectCustom = custom;
+                    if (converted)
+                    {
+                        var objectKnown = knownByType.TryGetValue(BuildingBlockType.Object, out var objectNames)
+                            ? objectNames
+                            : emptyKnown;
+                        var objectAuto = CategoryRoles.Suggest(cfg.name, cfg.keywords, authored, objectKnown, StructuralRole.None);
+                        objectCustom = rule?.Categories != null;
+                        objectNamesForEntry = objectCustom
+                            ? ResolveRuleCategories(rule.Categories, db, objectKnown)
+                            : objectAuto;
+                    }
                     var entry = new WorkshopEntry
                     {
                         Id = blockId,
@@ -398,30 +617,22 @@ namespace WorkshopProcgen
                         PublishedId = publishedId,
                         Local = local,
                         WallMount = cfg.wallMountType,
-                        Categories = IdsForNames(activeNames, categoryIdByName),
+                        Categories = IdsForNames(objectNamesForEntry, categoryIdByName),
                         Footprint = fp,
                         Chance = chance,
+                        Role = role,
+                        CategoryRestricted = objectCustom,
                     };
-                    catalog.Add(new CatalogAsset
-                    {
-                        Id = blockId,
-                        Name = cfg.name,
-                        PublishedId = publishedId,
-                        Local = local,
-                        Footprint = fp,
-                        AutoCategories = autoNames,
-                        Categories = activeNames,
-                        Enabled = enabled,
-                        Chance = chance,
-                        UsingCustomCategories = custom,
-                    });
-                    if (!enabled)
-                    {
-                        skippedDisabled++;
-                        continue;
-                    }
-                    entries.Add(entry);
+                    if (usableStructural)
+                        structural.Add(entry);
+                    else
+                        entries.Add(entry);
                 }
+            }
+            }
+            finally
+            {
+                WallPropConverter.Finish(db);
             }
 
             catalog.Sort((a, b) =>
@@ -438,6 +649,10 @@ namespace WorkshopProcgen
                     byCategory[cat] = list = new List<WorkshopEntry>();
                 list.Add(e);
             }
+
+            var byRole = new Dictionary<StructuralRole, WorkshopEntry[]>();
+            foreach (var group in structural.GroupBy(e => e.Role))
+                byRole[group.Key] = group.ToArray();
 
             var categoryChance = new Dictionary<string, float>();
             foreach (var kv in ov.CategoryChance)
@@ -473,10 +688,15 @@ namespace WorkshopProcgen
                 ScifiDeskId = scifiDeskId,
                 TableCategoryIds = tableCategories,
                 Catalog = catalog,
-                ObjectCategoryNames = objectCategoryNames.ToArray(),
+                ObjectCategoryNames = NamesFor(namesByType, BuildingBlockType.Object),
+                FloorCategoryNames = NamesFor(namesByType, BuildingBlockType.Floor),
+                WallCategoryNames = NamesFor(namesByType, BuildingBlockType.Wall),
+                OpeningCategoryNames = NamesFor(namesByType, BuildingBlockType.WallOpening),
+                ByRole = byRole,
             };
 
-            Plugin.Log.LogInfo($"Workshop index v{snap.Version}: {entries.Count} usable imported configs in {byCategory.Count} categories, " +
+            Plugin.Log.LogInfo($"Workshop index v{snap.Version}: {entries.Count} object configs, {structural.Count} structural configs, " +
+                               $"{convertedWalls} converted wall panels, " +
                                $"{catalog.Count} in the menu, {forced.Count} forced mappings, {categoryChance.Count} category chances " +
                                $"(skipped: hidden {skippedHidden}, type {skippedType}, local {skippedLocal}, blacklist {skippedBlacklist}, no bounds {skippedBounds}, disabled {skippedDisabled}). " +
                                $"ScifiDesk: {scifiDeskId ?? "not found"}");
@@ -484,12 +704,96 @@ namespace WorkshopProcgen
             foreach (var asset in catalog)
             {
                 var rate = asset.Chance.HasValue ? asset.Chance.Value.ToString("0.##") : "default";
+                string scope = asset.Role != StructuralRole.None && !asset.UsingCustomCategories
+                    ? "every " + RoleLabel(asset.Role)
+                    : string.Join(", ", asset.Categories);
                 Plugin.Log.LogInfo($"  [index] '{asset.Name}' {(asset.Enabled ? "on" : "off")} rate={rate} " +
-                                   $"replaces=[{string.Join(", ", asset.Categories)}]{(asset.UsingCustomCategories ? " (custom)" : "")}");
+                                   $"kind={RoleLabel(asset.Role)} replaces=[{scope}]{(asset.UsingCustomCategories ? " (custom)" : "")}");
             }
 
             return snap;
         }
+
+        private static bool TryParseBuildAs(string text, out bool asObject, out StructuralRole role)
+        {
+            asObject = false;
+            role = StructuralRole.None;
+            if (string.IsNullOrWhiteSpace(text) || string.Equals(text, "auto", StringComparison.OrdinalIgnoreCase))
+                return false;
+            if (string.Equals(text, "object", StringComparison.OrdinalIgnoreCase))
+            {
+                asObject = true;
+                return true;
+            }
+            if (string.Equals(text, "wall", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "full wall", StringComparison.OrdinalIgnoreCase))
+                role = StructuralRole.Wall;
+            else if (string.Equals(text, "partial", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "partial wall", StringComparison.OrdinalIgnoreCase))
+                role = StructuralRole.PartialWall;
+            else if (string.Equals(text, "floor", StringComparison.OrdinalIgnoreCase))
+                role = StructuralRole.Floor;
+            else if (string.Equals(text, "door", StringComparison.OrdinalIgnoreCase))
+                role = StructuralRole.Door;
+            else if (string.Equals(text, "window", StringComparison.OrdinalIgnoreCase))
+                role = StructuralRole.Window;
+            else
+                return false;
+            return true;
+        }
+
+        private static long WorkshopAddedUtcTicks(ulong publishedId)
+        {
+            if (publishedId == 0)
+                return 0;
+            try
+            {
+                var dir = Path.GetFullPath(Path.Combine(Paths.GameRootPath, "..", "..", "workshop", "content", "1588530", publishedId.ToString()));
+                return Directory.Exists(dir) ? Directory.GetCreationTimeUtc(dir).Ticks : 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        internal static StructuralRole RoleOf(BuildingBlockConfig config)
+        {
+            if (config == null)
+                return StructuralRole.None;
+            try
+            {
+                if (config.type == BuildingBlockType.Floor)
+                    return StructuralRole.Floor;
+                if (config.IsFullWall())
+                    return StructuralRole.Wall;
+                if (config.IsPartialWall())
+                    return StructuralRole.PartialWall;
+                if (config.IsDoor())
+                    return StructuralRole.Door;
+                if (config.IsWindow())
+                    return StructuralRole.Window;
+            }
+            catch
+            {
+                return StructuralRole.None;
+            }
+            return StructuralRole.None;
+        }
+
+        internal static string RoleLabel(StructuralRole role)
+        {
+            switch (role)
+            {
+                case StructuralRole.Floor: return "floor";
+                case StructuralRole.Wall: return "full wall";
+                case StructuralRole.PartialWall: return "partial wall";
+                case StructuralRole.Door: return "door";
+                case StructuralRole.Window: return "window";
+                default: return "object";
+            }
+        }
+
+        private static string[] NamesFor(Dictionary<BuildingBlockType, List<string>> namesByType, BuildingBlockType type)
+            => namesByType.TryGetValue(type, out var names) ? names.ToArray() : Array.Empty<string>();
 
         private static string[] NamesOf(IEnumerable<string> categoryIds, DatabaseConnection db)
         {
